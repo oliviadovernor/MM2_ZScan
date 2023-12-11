@@ -1,0 +1,115 @@
+import java.io.*;
+import java.lang.Double;
+import org.micromanager.api.ScriptInterface;
+import org.micromanager.api.MMPlugin;
+import org.micromanager.display.DisplayWindow;
+import org.micromanager.data.Image;
+import org.micromanager.data.Datastore;
+import mmcorej.TaggedImage;
+
+import java.util.Date;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+
+import org.micromanager.data.Coords;
+import org.micromanager.data.Metadata;
+import org.micromanager.data.Metadata.MetadataBuilder;
+
+// Define parameters
+int framesPerBurst = 1; // number of images taken at each z-position
+int exposure = 30; // exposure length in ms
+int stepSize = 200; // z-distance between steps in nm
+int stepNum = 70; // number of steps imaged above and below the start position
+
+// Define the file path location (saved on C: drive in a temp folder by date and time)
+private String getDateTime() {
+    DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
+    Date date = new Date();
+    return dateFormat.format(date);
+}
+
+String pathLoc = "C:/Users/schermancamrig23/Desktop/SMLFM Calibrations/" + getDateTime();
+// mm.getScriptController().message(pathLoc); // Print the file path for reference (commented out)
+(new File(pathLoc)).mkdir();
+
+// Set up calibration.dat file for easy-dhpsf (file created at the end)
+boolean createDatFile(int stepSize, int stepNum, int framesPerBurst) {
+    try {
+        BufferedWriter out = new BufferedWriter(new FileWriter(pathLoc + "/Calibration.dat"));
+
+        for (int i = -stepNum; i < stepNum + 1; i++) {
+            double z = ((double) i) * ((double) stepSize) / 1000.0;
+            out.write("-1 -1 -1 " + z + "\n");
+
+            for (int j = 1; j < framesPerBurst; j++) {
+                out.write("0 1 1 " + z + "\n");
+            }
+        }
+        out.close();
+    } catch (IOException e) {
+        mm.getScriptController().message("Error writing the '.dat' calibration file: " + e.getMessage());
+    }
+    return false;
+}
+
+// Initialize acquisition
+mm.core().setExposure(exposure); // set exposure time
+//mm.core().setProperty("Core", "AutoShutter", 0); // disable auto shutter
+mmc.setShutterOpen(true);
+
+// Define the origin and start position
+double zOrigin = mm.core().getPosition("ZDrive");
+double zStart = zOrigin - (stepSize / 1000.0) * stepNum;
+
+// Create a new Datastore for each Z position
+Datastore store = mm.data().createRAMDatastore(); // allocate RAM space for the image
+cb              = mm.data().coordsBuilder().t(0).z(0); //origin coord
+DisplayWindow dw = mm.displays().createDisplay(store);  // for displaying the acquired image (commented out)
+
+// Use a for-loop to scan through Z positions
+for (int i = 0; i <= 2 * stepNum; i++) 
+{
+    // Move the objective to the new position before imaging
+    double pos = zStart + (i * stepSize / 1000.0);
+    // mm.getScriptController().message(Double.toString(pos)); // Print pos for verification (commented out)
+    mm.core().setPosition("ZDrive", pos); // Move the Z-stage to the desired position
+    mm.core().waitForDevice("ZDrive"); // Wait for the ZStage device
+    zPos = mmc.getPosition("ZDrive");
+    print(zPos*10);
+    
+    // Acquire 'framesPerBurst' images at each Z position using snapImage
+    for (int j = 0; j < framesPerBurst; j++) 
+    {
+//        mm.core().snapImage();
+//        TaggedImage tmp = mm.core().getTaggedImage();
+//        Image img = mm.data().convertTaggedImage(tmp);
+        
+        // Create a new Datastore for each image to avoid modifying a frozen Datastore
+//        Datastore imageStore = mm.data().createRAMDatastore();
+			mmc.snapImage();
+			TaggedImage tmp     = mmc.getTaggedImage();
+			Image image1        = mm.data().convertTaggedImage(tmp);
+			MetadataBuilder mdb = image1.getMetadata().copy();
+			md                  = mdb.build(); //change metadata
+ 			Coords coord        = cb.time(j).z(i).build(); //change coord
+			image1              = image1.copyWith(coord, md); //set the new coord and metadata
+			store.putImage(image1); //add to the datastor		
+    } 
+    mm.getScriptController().message("Acquisition finished for current Z position");
+}
+
+if (store != null) {
+    String savepath = pathLoc + "/CalibrationScan_" + zOrigin + getDateTime() + ".tif";
+    store.save(Datastore.SaveMode.MULTIPAGE_TIFF, savepath);
+    store.freeze();
+} else {
+    mm.getScriptController().message("Datastore is null, cannot save images.");
+}
+
+// Move back to the start position
+mm.core().setPosition("ZDrive", zOrigin);
+
+// Create Calibration.dat file for use in easy dhpsf
+createDatFile(stepSize, stepNum, framesPerBurst);
+
+mm.getScriptController().message("Done!");
